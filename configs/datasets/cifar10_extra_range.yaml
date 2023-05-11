@@ -1,0 +1,25 @@
+---
+!include cifar10.yaml
+---
+model:
+    type: !bind:src.models.resnet_model.ResNetModel
+        data_type: float32
+        num_classes: !xref dataset.num_classes
+        input_size: [1, 3, 32, 32]
+        blocks: [4,4,4,4,8,8]
+        reduce: [1,1,0,0,0,1]
+        stem: 64
+        proj3x3: false
+        dw_proj: true
+
+server:
+  strategy:
+    sampling:
+      comms_limt: 95620644 # approx half size of supernet
+    client_clustering:
+      brackets: [101063540.0, 714005057.0, 1326946574.0] # left brackets for each tier (except the last one -- which will be the max in the supernet)
+
+clients_per_round: 10
+num_rounds: 750
+pdf_csum: 0.9
+pdf_l_csum: 0.000000001

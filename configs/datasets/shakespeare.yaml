@@ -1,0 +1,90 @@
+---
+!include configs/base.yaml
+---
+dataset:
+    name: shakespeare
+    num_classes: 12
+    data_path: ./data
+    lda_alpha: -1 # comes pre-partitioned
+    num_partitions: 715 # comes pre-partitioned
+    val_ratio: 0.1
+    val_global_sample_ratio:  1.0 # if < 1.0 a random subset of the global validation set will be used to score valid models in each bucket/tier
+
+model:
+    type: !bind:src.models.shakespeare_model.ShakespeareModel
+        data_type: float32
+        input_size: [1, 80]
+        vocab_size: 90
+        num_classes: !eval model.type.vocab_size
+        embedding_dim: 8
+        hidden_dim: 128
+
+server:
+    strategy:
+        sampling:
+            mode: subnet_random # {supernet} or {subnet_random}
+            comms_limt: 830000 # ~half the supernet size
+        client_clustering:
+            num_clusters: 5
+            client_distribution: [0.2, 0.2, 0.2, 0.2, 0.2]
+search:
+    method:
+        iterations: [100, 150, 150, 150, 100]
+        best_metric: val_perplexity # metric to determnine goodness of a model
+        is_max_metric: false # if true, best model maximises `best_metric`
+        nsga2_settings:
+            pool_size: 32
+            sample_size: 16
+
+client: # settings for client when using fit() method and how much Ray allocates
+    type: !bind:src.client.FedorASClient
+        model_cfg: !xref model
+        client_cfg:
+            dataset: !xref dataset.name
+            num_classes: !xref dataset.num_classes
+            num_workers: 2 # TODO: better set to 0?
+            batch_size: 4
+            optim:
+                type: !bind:torch.optim.SGD
+                    lr: 1.0
+                    momentum: 0.0
+                    weight_decay: 0.0
+            train_cfg: # parameterises the src.train.train calls
+                gradclip: 5.0
+                perplexity: true
+                epochs: 5
+    ray_resources:
+        num_cpus: !xref client.type.client_cfg.num_workers
+        num_gpus: 0.5
+
+finetuneclient:
+    type: !bind:src.client.FedorASClient
+        model_cfg: !xref model
+        client_cfg:
+            dataset: !xref dataset.name
+            num_classes: !xref dataset.num_classes
+            num_workers: 2
+            batch_size: 4
+            optim:
+                type: !bind:torch.optim.SGD
+                    lr: 1.0
+                    momentum: 0.0
+                    weight_decay: 0.0
+            train_cfg: # parameterises the src.train.train calls
+                gradclip: 5.0
+                perplexity: true
+                epochs: 1
+    ray_resources:
+        num_cpus: !xref client.type.client_cfg.num_workers
+        num_gpus: 0.5
+
+finetune: # config for per-tier fine-tuning (stage III)
+  strategy:
+    clients_per_round: 16
+    lr_decay:
+      mode: step # {cosine, step}
+
+clients_per_round: 16
+num_rounds: 500
+pdf_csum: 0.77
+pdf_l_csum: 0.01

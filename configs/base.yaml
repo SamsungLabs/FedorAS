@@ -1,0 +1,81 @@
+---
+dataset: !required # settings defining the dataset and how it is partitioned
+client: !required # settings for client
+finetuneclient: !required # settings for clients in the per-tier FL finetune stage (stage III)
+model: !required # settings defining the model
+clients_per_round: !required
+num_rounds: !required
+
+server:
+  num_rounds: !xref num_rounds
+  eval_fn: # to construct the function that will evaluate the global model
+    num_classes: !xref dataset.num_classes
+    val_global_sample_ratio: !xref dataset.val_global_sample_ratio
+    task_id: !weak null # to be set if performing multi-task FedorAS
+    batch_size: 100
+    num_workers: 4
+    eval_cfg: # parameterise the src.train.eval calls
+        perplexity: !xref client.type.client_cfg.train_cfg.perplexity
+        epochs: 1
+        func: !bind:src.train.eval
+          cid: null
+  strategy:
+    fn: !bind:src.server.OPA #  {src.server.OPA, src.server.PlainStrategy}
+      num_total_clients: !xref dataset.num_partitions
+      num_rounds: !xref num_rounds
+    sampling:
+      mode: subnet_random # {supernet} or {subnet_random}
+      comms_limt: 11400000 # approx size of a ResNet18
+    clients_per_round: !xref clients_per_round
+    eval_fn_every_n: 10 # sets how often global evaluation is run
+    save_global_every_n: 999
+    lr_decay: null
+    model: !xref model
+    tasks_per_tier: null # will be set if multi-task FedorAS setting
+    client_clustering:
+      num_clusters: 4
+      pdf_csum: !xref pdf_csum
+      pdf_l_csum: !xref pdf_l_csum
+      client_distribution: [0.25, 0.25, 0.25, 0.25]
+
+search: # config for the search (stage II)
+  method: !bind:src.search.NSGA2Search # {src.search.RandomSearch, src.search.NSGA2Search}
+    dataset: !xref dataset.name
+    best_metric: val_acc # metric to determnine goodness of a model
+    is_max_metric: true # if true, best model maximises `best_metric`
+    iterations: [1000, 1000, 1000, 1000] # this should be a list of length equal to the number of clusters/tiers
+    task_per_tier: !xref server.strategy.tasks_per_tier
+    nsga2_settings:
+      pool_size: 128
+      sample_size: 64
+      mutation_prob: 0.1
+
+finetune: # config for per-tier fine-tuning (stage III)
+  num_rounds: 100
+  num_rounds_end2end: 500 # means a model is extracted from the supernet but is trained from scratch in a per-tier FL manner
+  eval_fn: !xref server.eval_fn
+  transfer: null # null by default, will be used for 12->35 transfer task in SpeechCommands
+  strategy:
+    num_rounds: !xref finetune.num_rounds
+    clients_per_round: 6
+    clients_per_round_end2end: !xref clients_per_round # we might want this to be different to the above if the finetune stage takes an uninitialised model.
+    eval_fn_every_n: 5
+    save_global_every_n: 999
+    lr_decay:
+      mode: cosine # {cosine, step}
+      factor: 0.1 # if mode=cosine, the end_lr will be init_lr*factor; if mode=step, at each milestone epoch, new_lr=previous_lr*factor
+      init_lr: !xref finetuneclient.type.client_cfg.optim.type.lr
+      init_lr_end2end: !xref client.type.client_cfg.optim.type.lr # if we are training from scratch an model extracted from the supernet we'll likely want to use a higher lr than otherwise
+    model: !xref model
+  client: !xref finetuneclient
+  reporter: !bind:src.reporter.Reporter
+    exp_dir: null # to be set at runtime
+
+misc: !force
+  now: !eval "import datetime;datetime.datetime.now().strftime('%b%d_%H_%M_%S')"
+  strategy_str: !eval "import re;result=re.search(\"'(.*)'\", str(server.strategy.fn.func));str(result.group(1))"
+  exp_name: !fstr "{dataset.name}_{misc.strategy_str}_{dataset.num_partitions}clients_alpha{dataset.lda_alpha}_batch{client.type.keywords[\"client_cfg\"][\"batch_size\"]}_{num_rounds}rounds_{dataset.val_global_sample_ratio}val_sample"
+  exp_dir: !path:parent(1) [experiments, !fstr '{misc.exp_name}', !fstr '{misc.now}']
+
+reporter: !bind:src.reporter.Reporter # config to define how experiment data is recorded
+  exp_dir: !xref misc.exp_dir

@@ -1,0 +1,11 @@
+---
+!include cifar100.yaml
+---
+dataset:
+    num_classes: [20, 100]
+
+server:
+  strategy:
+    tasks_per_tier: [0, 0, 1, 1]
+    client_clustering:
+      client_distribution: [0.5, 0.25, 0.125, 0.125]

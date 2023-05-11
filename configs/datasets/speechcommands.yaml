@@ -1,0 +1,88 @@
+---
+!include configs/base.yaml
+---
+dataset:
+    name: speechcommands
+    num_classes: 12
+    data_path: ./data
+    lda_alpha: -1 # comes pre-partitioned
+    num_partitions: 2112 # comes pre-partitioned
+    val_ratio: -1 # given by dataset
+    val_global_sample_ratio:  1.0 #! Not used for this dataset # if < 1.0 a random subset of the global validation set will be used to score valid models in each bucket/tier
+
+model:
+    type: !bind:src.models.speechcommands_model.SpeechCommandsModel
+        data_type: float32
+        num_classes: !xref dataset.num_classes
+        input_size: [1, 1, 40, 51] # batch, inCh, num_mfcc, number_of_windows
+        blocks: [1,1,2,2]
+        channels_scale: 2.0
+        stem: 16
+        proj3x3: true
+
+client: # settings for client when using fit() method and how much Ray allocates
+    type: !bind:src.client.FedorASClient
+        model_cfg: !xref model
+        client_cfg:
+            dataset: !xref dataset.name
+            num_classes: !xref dataset.num_classes
+            num_workers: 4 # TODO: better set to 0?
+            batch_size: 64
+            optim:
+                type: !bind:torch.optim.SGD
+                    lr: 0.1
+                    momentum: 0.9
+                    weight_decay: 0.0
+            train_cfg: # parameterises the src.train.train calls
+                gradclip: null
+                perplexity: false
+                epochs: 25
+    ray_resources:
+        num_cpus: !xref client.type.client_cfg.num_workers
+        num_gpus: 0.333
+
+finetuneclient:
+    type: !bind:src.client.FedorASClient
+        model_cfg: !xref model
+        client_cfg:
+            dataset: !xref dataset.name
+            num_classes: !xref dataset.num_classes
+            num_workers: 4
+            batch_size: 32
+            optim:
+                type: !bind:torch.optim.SGD
+                    lr: 0.01
+                    momentum: 0.9
+                    weight_decay: 0.0
+            train_cfg: # parameterises the src.train.train calls
+                gradclip: null
+                perplexity: false
+                epochs: 1
+    ray_resources:
+        num_cpus: !xref client.type.client_cfg.num_workers
+        num_gpus: 0.25
+
+
+search: # config for the search (stage II)
+  method:
+    iterations: [2000, 500, 500, 2000]
+    nsga2_settings:
+        pool_size: 96
+        sample_size: 48
+
+server:
+  strategy:
+    sampling:
+      mode: subnet_random # {supernet} or {subnet_random}
+      comms_limt: 1500000 # 1.5M
+    client_clustering:
+      client_distribution: [0.8, 0.0125, 0.0125, 0.175]
+
+finetune: # config for per-tier fine-tuning (stage III)
+  strategy:
+    clients_per_round: 21
+
+clients_per_round: 21
+num_rounds: 750
+pdf_csum: 0.925
+pdf_l_csum: 0.3
